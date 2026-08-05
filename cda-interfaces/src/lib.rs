@@ -13,11 +13,12 @@
 
 use std::{
     fmt::{Display, Formatter},
+    pin::Pin,
     time::Duration,
 };
 
 use async_trait::async_trait;
-use futures::{FutureExt, future::BoxFuture};
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -40,6 +41,7 @@ pub mod file_manager;
 pub mod health;
 mod schema;
 pub use schema::*;
+pub mod communication_control;
 pub mod config;
 pub mod runtime_update_api;
 pub mod storage_api;
@@ -265,6 +267,16 @@ pub enum DiagServiceError {
     NotFound(String),
     #[error("Request not supported: {0}")]
     RequestNotSupported(String),
+    #[error("Communication disabled: {0}")]
+    CommunicationDisabled(String),
+    /// Communication was not enabled and either activation is not authorized
+    /// under the current `init_mode` or activation itself failed. Carries a
+    /// configured retry hint, unlike the coarser [`CommunicationDisabled`](Self::CommunicationDisabled).
+    #[error("Communication not ready: {message}")]
+    CommunicationNotReady {
+        message: String,
+        retry_after_seconds: u64,
+    },
     #[error("Invalid database: {0}")]
     InvalidDatabase(String),
     #[error("Invalid request: {0}")]

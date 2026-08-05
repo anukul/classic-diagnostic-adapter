@@ -19,7 +19,7 @@ use axum::{
         Request,
         rejection::{JsonRejection, QueryRejection},
     },
-    http::{StatusCode, Uri},
+    http::{HeaderValue, StatusCode, Uri, header::RETRY_AFTER},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -28,6 +28,7 @@ use cda_interfaces::{
     diagservices::{DiagServiceResponse, MappedNRC},
     file_manager::MddError,
 };
+use cda_plugin_communication_management::lifecycle::error::CommunicationError;
 use serde::{Deserialize, Serialize};
 use serde_qs::axum::QsQueryRejection;
 use sovd_interfaces::error::{ApiErrorResponse, ErrorCode};
@@ -50,8 +51,34 @@ pub enum ApiError {
     Conflict(String),
     #[error("Not Responding: {0}")]
     NotResponding(String),
+    #[error("Service Unavailable: {message}")]
+    ServiceUnavailable {
+        message: String,
+        retry_after_seconds: Option<u64>,
+        error_code: ErrorCode,
+        vendor_code: Option<VendorErrorCode>,
+    },
     #[error("The value of the parameter is not of the allowed values")]
     InvalidParameter { possible_values: HashSet<String> },
+}
+
+impl From<CommunicationError> for ApiError {
+    fn from(value: CommunicationError) -> Self {
+        match value {
+            CommunicationError::Failed(failure) => ApiError::ServiceUnavailable {
+                message: failure.to_string(),
+                retry_after_seconds: None,
+                error_code: ErrorCode::SovdServerFailure,
+                vendor_code: None,
+            },
+            value => ApiError::ServiceUnavailable {
+                message: value.to_string(),
+                retry_after_seconds: None,
+                error_code: ErrorCode::VendorSpecific,
+                vendor_code: Some(VendorErrorCode::CommunicationNotReady),
+            },
+        }
+    }
 }
 
 impl ApiError {
@@ -69,6 +96,11 @@ impl ApiError {
                 ErrorCode::VendorSpecific,
                 Some(VendorErrorCode::InvalidParameter),
             ),
+            ApiError::ServiceUnavailable {
+                error_code,
+                vendor_code,
+                ..
+            } => (error_code.clone(), vendor_code.clone()),
             _ => (ErrorCode::SovdServerFailure, None),
         }
     }
@@ -111,6 +143,21 @@ impl From<DiagServiceError> for ApiError {
             | DiagServiceError::AmbiguousParameters { .. } => {
                 ApiError::BadRequest(value.to_string())
             }
+            DiagServiceError::CommunicationNotReady {
+                message,
+                retry_after_seconds,
+            } => ApiError::ServiceUnavailable {
+                message,
+                retry_after_seconds: Some(retry_after_seconds),
+                error_code: ErrorCode::VendorSpecific,
+                vendor_code: Some(VendorErrorCode::CommunicationNotReady),
+            },
+            DiagServiceError::CommunicationDisabled(_) => ApiError::ServiceUnavailable {
+                message: value.to_string(),
+                retry_after_seconds: None,
+                error_code: ErrorCode::VendorSpecific,
+                vendor_code: Some(VendorErrorCode::CommunicationNotReady),
+            },
             DiagServiceError::AccessDenied(_) => ApiError::Forbidden(Some(value.to_string())),
         }
     }
@@ -167,7 +214,7 @@ pub struct ErrorWrapper {
     pub include_schema: bool,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum VendorErrorCode {
     /// The requested resource was not found.
@@ -193,6 +240,9 @@ pub enum VendorErrorCode {
     /// A severe error occurred that needs further investigation, safe operation is still possible
     /// but this indicates an issue that should be investigated
     SevereError,
+    /// ECU communication is not currently available; retry after the interval given in the
+    /// `Retry-After` header.
+    CommunicationNotReady,
     /// Indicates that something went terribly wrong and safe operation cannot be guaranteed at
     /// this point. The application still tries to serve requests in the best effort,
     /// but correctness may be affected by this error.
@@ -324,9 +374,56 @@ impl IntoResponse for ErrorWrapper {
                     },
                 ),
             ),
+            ApiError::ServiceUnavailable {
+                message,
+                retry_after_seconds,
+                error_code,
+                vendor_code,
+            } => {
+                return service_unavailable_response(
+                    message,
+                    retry_after_seconds,
+                    error_code,
+                    vendor_code,
+                    schema,
+                );
+            }
         }
         .into_response()
     }
+}
+
+/// Builds the `ServiceUnavailable` response separately to keep
+/// `ErrorWrapper::into_response` within the line-count lint: a plain
+/// `(StatusCode, Json<_>)` tuple can't carry the `Retry-After` header, so
+/// this variant needs the extra header-insertion step the others don't.
+fn service_unavailable_response(
+    message: String,
+    retry_after_seconds: Option<u64>,
+    error_code: ErrorCode,
+    vendor_code: Option<VendorErrorCode>,
+    schema: Option<schemars::Schema>,
+) -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(
+            ApiErrorResponse::<VendorErrorCode> {
+            message,
+            error_code,
+            vendor_code,
+                parameters: None,
+                error_source: None,
+                schema,
+            },
+        ),
+    )
+        .into_response();
+    if let Some(retry_after_seconds) = retry_after_seconds
+        && let Ok(v) = HeaderValue::from_str(&retry_after_seconds.to_string())
+    {
+        response.headers_mut().insert(RETRY_AFTER, v);
+    }
+    response
 }
 
 pub(crate) fn nrc_to_api_error_response(

@@ -38,7 +38,7 @@
 //!     .with_doip(doip_gateway)
 //!     .with_can(can_gateway);
 //! ```
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 pub use cda_interfaces::TransportType;
@@ -46,6 +46,9 @@ use cda_interfaces::{
     DiagServiceError, EcuAddresses, EcuGateway, FunctionalTransport, HashMap, NetworkTopology,
     PhysicalTransport, ReusableTransportResource, RouteStatus, ServicePayload, Shutdown,
     TransmissionParameters, TransportProbe, TransportResponse,
+    communication_control::{
+        TransportControl, TransportState, TransportStateTracker, error::CommControlError,
+    },
 };
 use tokio::sync::{RwLock, mpsc};
 
@@ -70,6 +73,8 @@ pub struct DiagnosticTransportRouter<
     /// transport). Entries are written once and never change at runtime, so
     /// a diagnostic session can never silently switch transports.
     ecu_bindings: Arc<RwLock<HashMap<String, TransportType>>>,
+    /// Authoritative router lifecycle state and its operation serialization.
+    transport_state: Arc<TransportStateTracker>,
 }
 
 impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + TransportProbe>
@@ -78,11 +83,13 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
     /// Creates a new diagnostic transport router with the given per-ECU transport overrides.
     #[must_use]
     pub fn new(transport_overrides: HashMap<String, TransportType>) -> Self {
+        let tracker = TransportStateTracker::new(TransportState::Disabled);
         Self {
             doip_gateway: None,
             can_gateway: None,
             transport_overrides: Arc::new(transport_overrides),
             ecu_bindings: Arc::new(RwLock::new(HashMap::default())),
+            transport_state: Arc::new(tracker),
         }
     }
 
@@ -214,6 +221,19 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
 
         Err(DiagServiceError::EcuOffline(ecu_name.to_owned()))
     }
+
+    /// Router-level send gate. Rejects datapath traffic while communication is
+    /// inhibited so requests cannot reach transport before the
+    /// lifecycle is enabled.
+    async fn ensure_communication_active(&self) -> Result<(), DiagServiceError> {
+        if self.transport_state.active().await {
+            Ok(())
+        } else {
+            Err(DiagServiceError::CommunicationDisabled(
+                "Diagnostic communication disabled".to_owned(),
+            ))
+        }
+    }
 }
 
 impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + TransportProbe>
@@ -230,6 +250,7 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
         response_sender: mpsc::Sender<Result<Option<TransportResponse>, DiagServiceError>>,
         expect_uds_reply: bool,
     ) -> Result<(), DiagServiceError> {
+        self.ensure_communication_active().await?;
         let ecu_name = transmission_params.ecu_name.to_lowercase();
         let transport = self.resolve_transport(&ecu_name).await?;
 
@@ -267,6 +288,7 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
         ecu_db: &RwLock<E>,
     ) -> Result<(), DiagServiceError> {
         // resolve_transport handles: overrides -> existing bindings -> first detection
+        self.ensure_communication_active().await?;
         let transport = self.resolve_transport(ecu_name).await?;
 
         // Online check on the resolved transport only (no failover)
@@ -294,6 +316,7 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
         timeout: std::time::Duration,
         expect_positive_response: bool,
     ) -> Result<HashMap<String, Result<ServicePayload, DiagServiceError>>, DiagServiceError> {
+        self.ensure_communication_active().await?;
         if let Some(ref doip) = self.doip_gateway {
             return doip
                 .send_functional(
@@ -406,6 +429,110 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
             can_gateway: self.can_gateway.clone(),
             transport_overrides: Arc::clone(&self.transport_overrides),
             ecu_bindings: Arc::clone(&self.ecu_bindings),
+            transport_state: Arc::clone(&self.transport_state),
         }
+    }
+}
+
+impl<
+    D: EcuGateway + FunctionalTransport + TransportProbe + TransportControl,
+    C: EcuGateway + TransportProbe + TransportControl,
+> DiagnosticTransportRouter<D, C>
+{
+    /// Shared body for [`TransportControl::enable`] and [`TransportControl::disable`].
+    ///
+    /// * `in_progress`   - state to enter before fanning out to gateways.
+    /// * `gateway_op`    - the [`TransportControl`] method to call on each gateway.
+    /// * `success_state` - state to enter when all gateways succeed.
+    async fn run_lifecycle_operation<F>(
+        &self,
+        in_progress: TransportState,
+        gateway_op: F,
+        success_state: TransportState,
+    ) -> Result<(), CommControlError>
+    where
+        F: for<'a> Fn(
+            &'a dyn TransportControl,
+        )
+            -> Pin<Box<dyn Future<Output = Result<(), CommControlError>> + Send + 'a>>,
+    {
+        let _lifecycle = self.transport_state.lifecycle_guard().await;
+        // Check after acquiring the guard so concurrent callers observe the
+        // lifecycle operation completed by the caller that acquired it first.
+        if self.transport_state.state().await == success_state {
+            return Ok(());
+        }
+
+        self.transport_state.transition(in_progress).await;
+
+        let mut errors = Vec::new();
+        for gateway in [
+            self.doip_gateway
+                .as_ref()
+                .map(|g| g as &dyn TransportControl),
+            self.can_gateway
+                .as_ref()
+                .map(|g| g as &dyn TransportControl),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Err(e) = gateway_op(gateway).await {
+                errors.push(e.to_string());
+            }
+        }
+
+        if errors.is_empty() {
+            self.transport_state.transition(success_state).await;
+            Ok(())
+        } else {
+            self.transport_state
+                .transition(TransportState::Failed)
+                .await;
+            Err(CommControlError::InitFailedMultipleComponents(errors))
+        }
+    }
+}
+
+/// Delegates the communication lifecycle to every configured gateway.
+///
+/// `enable`/`disable` fan out to the `DoIP` and CAN gateways. The router
+/// manages its **own** [`TransportStateTracker`] independently of the trackers
+/// inside each gateway. The router's tracker is the single source of truth
+/// observed by the communication manager (via `SwappableGateway`).
+///
+/// Each gateway's `enable()`/`disable()` also transitions the gateway's own
+/// internal tracker. This is expected and harmless - those transitions serve
+/// the gateway's idempotency guard and have no effect on the router's reported
+/// state or the coordinator's view.
+///
+/// The data-path gate ([`ensure_communication_active`](DiagnosticTransportRouter::ensure_communication_active))
+/// checks only the router-level status.
+#[async_trait]
+impl<
+    D: EcuGateway + FunctionalTransport + TransportProbe + TransportControl,
+    C: EcuGateway + TransportProbe + TransportControl,
+> TransportControl for DiagnosticTransportRouter<D, C>
+{
+    async fn enable(&self) -> Result<(), CommControlError> {
+        self.run_lifecycle_operation(
+            TransportState::Enabling,
+            |g| Box::pin(g.enable()),
+            TransportState::Enabled,
+        )
+        .await
+    }
+
+    async fn disable(&self) -> Result<(), CommControlError> {
+        self.run_lifecycle_operation(
+            TransportState::Disabling,
+            |g| Box::pin(g.disable()),
+            TransportState::Disabled,
+        )
+        .await
+    }
+
+    async fn state(&self) -> TransportState {
+        self.transport_state.state().await
     }
 }
