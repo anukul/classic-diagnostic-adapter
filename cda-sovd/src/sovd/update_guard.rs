@@ -78,7 +78,7 @@ impl UpdateGuardState {
         Arc::clone(&self.busy)
     }
 
-    /// Returns a shared reference to the exempt routes list.
+    /// Returns a snapshot of the exempt routes list at the time of calling.
     pub async fn exempt_routes(&self) -> Vec<ExemptRoute> {
         self.exempt_routes.read().await.clone()
     }

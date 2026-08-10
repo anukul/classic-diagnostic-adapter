@@ -49,6 +49,7 @@ use crate::{
     update::{UpdatePluginBuilder, create_default_update_plugin, update_plugin_fn},
 };
 
+pub mod cda_factory;
 pub mod config;
 pub mod error;
 pub mod mdd;
