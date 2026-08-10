@@ -44,8 +44,8 @@ use async_trait::async_trait;
 pub use cda_interfaces::TransportType;
 use cda_interfaces::{
     DiagServiceError, EcuAddresses, EcuGateway, FunctionalTransport, HashMap, NetworkTopology,
-    PhysicalTransport, ReusableTransportResource, RouteStatus, ServicePayload, Shutdown,
-    TransmissionParameters, TransportProbe, TransportResponse,
+    PhysicalTransport, RouteStatus, ServicePayload, Shutdown, TransmissionParameters,
+    TransportProbe, TransportResponse,
     communication_control::{
         TransportControl, TransportState, TransportStateTracker, error::CommControlError,
     },
@@ -402,22 +402,6 @@ impl<D: EcuGateway + FunctionalTransport + TransportProbe, C: EcuGateway + Trans
         if let Some(ref can) = self.can_gateway {
             can.shutdown().await;
         }
-    }
-}
-
-impl<
-    D: EcuGateway + FunctionalTransport + TransportProbe + ReusableTransportResource,
-    C: EcuGateway + TransportProbe,
-> ReusableTransportResource for DiagnosticTransportRouter<D, C>
-{
-    type TransportResource = D::TransportResource;
-
-    fn reusable_transport_resource(
-        &self,
-    ) -> Option<Arc<tokio::sync::Mutex<Self::TransportResource>>> {
-        self.doip_gateway
-            .as_ref()
-            .and_then(ReusableTransportResource::reusable_transport_resource)
     }
 }
 

@@ -29,18 +29,15 @@
 
 use std::{path::PathBuf, str::FromStr, sync::Arc};
 
+use crate::{
+    FunctionalDescriptionConfig, HashMap, Shutdown, UdsQuery,
+    file_manager::FileManager,
+    storage_api::{Collection, DirectFileAccess},
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Deserializer, Serialize};
 use strum_macros::EnumString;
-use tokio::sync::Mutex;
-
-use crate::{
-    FunctionalDescriptionConfig, HashMap, Shutdown, UdsQuery,
-    ecugateway::ReusableTransportResource,
-    file_manager::FileManager,
-    storage_api::{Collection, DirectFileAccess},
-};
 
 mod error;
 pub use error::{ConfigValidationError, ReloadError, RuntimeUpdateError, VerificationError};
@@ -50,7 +47,7 @@ pub use error::{ConfigValidationError, ReloadError, RuntimeUpdateError, Verifica
 pub struct VehicleComponents<UdsManager, Gateway, File>
 where
     UdsManager: UdsQuery + Shutdown,
-    Gateway: ReusableTransportResource + Shutdown,
+    Gateway: Shutdown,
     File: FileManager,
 {
     pub uds_manager: UdsManager,
@@ -66,26 +63,23 @@ where
 /// # Type parameters
 /// - `C`: opaque application configuration
 /// - `Q`: UDS manager type - must implement [`UdsQuery`] + [`Shutdown`]
-/// - `G`: diagnostic gateway type - must implement [`ReusableTransportResource`] + [`Shutdown`]
+/// - `G`: diagnostic gateway type - must implement [`Shutdown`]
 #[async_trait]
 pub trait VehicleComponentFactory<Config, Uds, Gateway>: Send + Sync + 'static
 where
     Config: Send + Sync + 'static,
     Uds: UdsQuery + Shutdown,
-    Gateway: ReusableTransportResource + Shutdown,
+    Gateway: Shutdown,
 {
     /// Concrete file-manager type produced by this factory.
     type FileManager: FileManager;
 
     /// Creates a fresh set of vehicle components.
     ///
-    /// `reusable_transport_resource` is the optional transport resource owned by the gateway being
-    /// replaced. Implementations reuse it when their configured transport requires it.
     async fn create(
         &self,
         config: &Config,
         mdd_paths: &[PathBuf],
-        reusable_transport_resource: Option<Arc<Mutex<Gateway::TransportResource>>>,
     ) -> Result<VehicleComponents<Uds, Gateway, Self::FileManager>, ReloadError>;
 }
 

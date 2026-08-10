@@ -36,17 +36,6 @@ mod gateway;
 #[cfg(feature = "can")]
 pub use gateway::{CanDiagGateway, error};
 
-#[cfg(feature = "can")]
-impl cda_interfaces::ReusableTransportResource for CanDiagGateway {
-    type TransportResource = ();
-
-    fn reusable_transport_resource(
-        &self,
-    ) -> Option<std::sync::Arc<tokio::sync::Mutex<Self::TransportResource>>> {
-        None
-    }
-}
-
 /// Stub `CanDiagGateway` when the `can` feature is disabled.
 ///
 /// This type exists only to satisfy the `Option<CanDiagGateway>` field in
@@ -133,17 +122,6 @@ impl cda_interfaces::communication_control::TransportControl for CanDiagGateway 
             reason = "Type is unconstructable, this match is unreachable"
         )]
         match self._unconstructable {}
-    }
-}
-
-#[cfg(not(feature = "can"))]
-impl cda_interfaces::ReusableTransportResource for CanDiagGateway {
-    type TransportResource = ();
-
-    fn reusable_transport_resource(
-        &self,
-    ) -> Option<std::sync::Arc<tokio::sync::Mutex<Self::TransportResource>>> {
-        None
     }
 }
 

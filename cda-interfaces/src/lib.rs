@@ -31,8 +31,8 @@ pub mod datatypes;
 pub mod diagservices;
 mod ecugateway;
 pub use ecugateway::{
-    EcuGateway, FunctionalTransport, NetworkTopology, PhysicalTransport, ReusableTransportResource,
-    RouteStatus, TransmissionParameters, TransportProbe,
+    EcuGateway, FunctionalTransport, NetworkTopology, PhysicalTransport, RouteStatus,
+    TransmissionParameters, TransportProbe,
 };
 mod ecumanager;
 pub use ecumanager::*;
@@ -46,6 +46,10 @@ pub mod communication_control;
 pub mod config;
 pub mod runtime_update_api;
 pub mod storage_api;
+pub mod updateable;
+pub use updateable::{
+    ConfigReloadContext, DatabaseReloadContext, ReloadContext, Updateable, UpdateableRegistry,
+};
 mod transport;
 pub use transport::TransportType;
 pub mod uds;

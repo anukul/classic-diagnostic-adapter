@@ -19,8 +19,8 @@ use std::{
 use async_trait::async_trait;
 use cda_interfaces::{
     DiagServiceError, DoipComParams, EcuAddresses, EcuConnectivityHandler, FunctionalTransport,
-    HashMap, HashMapExtensions, NetworkTopology, PhysicalTransport, ReusableTransportResource,
-    RouteStatus, ServicePayload, TransmissionParameters, TransportProbe, TransportResponse,
+    HashMap, HashMapExtensions, NetworkTopology, PhysicalTransport, RouteStatus, ServicePayload,
+    TransmissionParameters, TransportProbe, TransportResponse,
     communication_control::{
         TransportControl, TransportState, TransportStateTracker, error::CommControlError,
     },
@@ -1273,14 +1273,6 @@ impl<T: EcuAddresses + DoipComParams> TransportControl for DoipDiagGateway<T> {
 
     async fn state(&self) -> TransportState {
         self.lifecycle.coordinator.state().await
-    }
-}
-
-impl<T: EcuAddresses + DoipComParams> ReusableTransportResource for DoipDiagGateway<T> {
-    type TransportResource = Option<DoIPUdpSocket>;
-
-    fn reusable_transport_resource(&self) -> Option<Arc<Mutex<Self::TransportResource>>> {
-        Some(Arc::clone(&self.state.socket))
     }
 }
 

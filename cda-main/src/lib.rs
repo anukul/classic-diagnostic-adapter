@@ -574,8 +574,7 @@ pub async fn load_vehicle_data<S: SecurityPlugin>(
     };
 
     let prepared =
-        prepare_vehicle_components::<S>(config, &mdd_paths, health_providers.as_ref(), None)
-            .await?;
+        prepare_vehicle_components::<S>(config, &mdd_paths, health_providers.as_ref()).await?;
 
     // Gateway constructors are passive. The selected plugin is built before consumers receive
     // narrow views over the communication framework.
@@ -668,11 +667,8 @@ pub async fn create_vehicle_components<S: SecurityPlugin>(
     mdd_paths: &[PathBuf],
     health_providers: Option<&HashMap<String, Arc<dyn HealthProvider>>>,
     communication_access: Arc<dyn CommunicationAccess>,
-    reusable_doip_socket: Option<Arc<Mutex<Option<cda_comm_doip::socket::DoIPUdpSocket>>>>,
 ) -> Result<VehicleComponents<S>, AppError> {
-    let prepared =
-        prepare_vehicle_components(config, mdd_paths, health_providers, reusable_doip_socket)
-            .await?;
+    let prepared = prepare_vehicle_components(config, mdd_paths, health_providers).await?;
     Ok(finish_vehicle_components(
         prepared,
         config,
@@ -692,7 +688,6 @@ async fn prepare_vehicle_components<S: SecurityPlugin>(
     config: &Configuration,
     mdd_paths: &[PathBuf],
     health_providers: Option<&HashMap<String, Arc<dyn HealthProvider>>>,
-    reusable_doip_socket: Option<Arc<Mutex<Option<cda_comm_doip::socket::DoIPUdpSocket>>>>,
 ) -> Result<PreparedVehicleComponents<S>, AppError> {
     let db_provider: Option<&Arc<dyn HealthProvider>> =
         health_providers.and_then(|h| h.get(mdd::DB_HEALTH_COMPONENT_KEY));
@@ -725,7 +720,6 @@ async fn prepare_vehicle_components<S: SecurityPlugin>(
         variant_detection_tx,
         connectivity_handler,
         doip_provider,
-        reusable_doip_socket,
     )
     .await?;
 
@@ -772,7 +766,7 @@ pub(crate) fn finish_vehicle_components<S: SecurityPlugin>(
 }
 
 #[tracing::instrument(
-    skip(databases, transports, variant_detection, connectivity_handler, doip_health_provider, reusable_doip_socket),
+    skip(databases, transports, variant_detection, connectivity_handler, doip_health_provider),
     fields(
         database_count = databases.len(),
         dlt_context = dlt_ctx!("MAIN"),
@@ -789,10 +783,6 @@ pub async fn create_diagnostic_gateway<S: SecurityPlugin>(
     variant_detection: mpsc::Sender<Vec<String>>,
     connectivity_handler: Arc<dyn EcuConnectivityHandler>,
     doip_health_provider: Option<&Arc<dyn HealthProvider>>,
-    // `None` on initial startup - `init_doip_gateway` creates the socket.
-    // `None` in CAN-only operation - DoIP is skipped entirely.
-    // `Some(socket)` on reload - reused to avoid rebinding the DoIP port.
-    reusable_doip_socket: Option<Arc<Mutex<Option<cda_comm_doip::socket::DoIPUdpSocket>>>>,
 ) -> Result<DiagnosticTransportRouter<DoipDiagGateway<EcuManager<S>>, CanDiagGateway>, AppError> {
     let TransportConfigs {
         doip: doip_config,
@@ -834,7 +824,6 @@ pub async fn create_diagnostic_gateway<S: SecurityPlugin>(
         variant_detection.clone(),
         connectivity_handler,
         doip_health_provider,
-        reusable_doip_socket,
     )
     .await?
     {
@@ -868,7 +857,6 @@ async fn init_doip_gateway<S: SecurityPlugin>(
     variant_detection: mpsc::Sender<Vec<String>>,
     connectivity_handler: Arc<dyn EcuConnectivityHandler>,
     doip_health_provider: Option<&Arc<dyn HealthProvider>>,
-    reusable_doip_socket: Option<Arc<Mutex<Option<cda_comm_doip::socket::DoIPUdpSocket>>>>,
 ) -> Result<Option<DoipDiagGateway<EcuManager<S>>>, AppError> {
     if !doip_config.enabled {
         tracing::info!("DoIP transport disabled by config (doip.enabled = false)");
@@ -878,10 +866,8 @@ async fn init_doip_gateway<S: SecurityPlugin>(
         return Ok(None);
     }
 
-    // A reload hands through whatever the previous generation's cell holds
-    // (bound or not); a fresh generation starts with an empty cell. Either
-    // way, no socket is bound here - only `DoipDiagGateway::enable()` does that.
-    let doip_socket = reusable_doip_socket.unwrap_or_else(|| Arc::new(Mutex::new(None)));
+    // Socket binding remains lazy; each gateway generation owns a fresh cell.
+    let doip_socket = Arc::new(Mutex::new(None));
     if let Some(provider) = doip_health_provider {
         provider.set_status(cda_health::Status::Starting).await;
     }

@@ -17,7 +17,7 @@ use cda_comm_can::CanDiagGateway;
 use cda_comm_doip::DoipDiagGateway;
 use cda_core::EcuManager;
 use cda_interfaces::{
-    HashMap,
+    HashMap, UpdateableRegistry,
     health::HealthProvider,
     runtime_update_api::{
         ReloadError, RuntimeFilesUpdatePlugin, VehicleComponentFactory, VehicleComponents,
@@ -26,15 +26,16 @@ use cda_interfaces::{
 use cda_plugin_communication_management::lifecycle::access::CommunicationAccess;
 use cda_plugin_runtime_update::{
     DefaultRuntimeUpdatePlugin, DefaultUpdateSecurityHandler,
-    default_runtime_reloader_plugin::{
-        DefaultReloadContext as ReloaderContext, DefaultRuntimeReloaderPlugin,
+    default_runtime_reloader_plugin::DefaultRuntimeReloaderPlugin,
+    reloadables::{
+        ConfigReloadable, GatewayReloadable, LockProviderReloadable, UdsManagerReloadable,
+        VehicleRouteReloadable,
     },
 };
 use cda_plugin_security::{SecurityPlugin, SecurityPluginLoader};
 use cda_sovd::SovdLockStateProvider;
 use cda_storage::LocalStorage;
 use cda_transport_router::DiagnosticTransportRouter;
-use tokio::sync::Mutex;
 
 use crate::{
     AppError, UdsManagerType,
@@ -143,9 +144,6 @@ where
         &self,
         config: &Configuration,
         mdd_paths: &[PathBuf],
-        reusable_transport_resource: Option<
-            Arc<Mutex<Option<cda_comm_doip::socket::DoIPUdpSocket>>>,
-        >,
     ) -> Result<
         VehicleComponents<
             UdsManagerType<SP>,
@@ -159,7 +157,6 @@ where
             mdd_paths,
             self.health_providers.as_ref(),
             Arc::clone(&self.communication_access),
-            reusable_transport_resource,
         )
         .await
         .map_err(|e| {
@@ -227,32 +224,30 @@ where
         Arc::clone(&infra.communication_access),
     ));
 
-    let reloader_infra = ReloaderContext {
-        config: infra.config,
-        dynamic_router: infra.dynamic_router,
-        vehicle_route_handle: infra.vehicle_route_handle,
-        flash_files_path: infra.flash_files_path,
-        components_config: infra.components_config,
-        lock_provider: Arc::clone(&infra.lock_provider),
-        shutdown_signal: infra.shutdown_signal,
-        communication_access: Arc::clone(&infra.communication_access),
-        uds_manager: infra.uds_manager,
-        diagnostic_gateway: infra.gateway,
-        health: infra.health,
-        storage_dir: infra.storage_dir.clone(),
-        mdd_decompress: infra.mdd_decompress,
-    };
+    let mut registry = UpdateableRegistry::new();
+    registry.register(Arc::new(GatewayReloadable::new(Arc::clone(&infra.gateway))));
+    registry.register(Arc::new(UdsManagerReloadable::new(Arc::clone(
+        &infra.uds_manager,
+    ))));
+    registry.register(Arc::new(LockProviderReloadable::new(Arc::clone(
+        &infra.lock_provider,
+    ))));
+    registry.register(Arc::new(VehicleRouteReloadable::<_, SL>::new(
+        infra.dynamic_router.clone(),
+        infra.vehicle_route_handle.clone(),
+        infra.flash_files_path.clone(),
+        infra.components_config.clone(),
+        Arc::clone(&infra.lock_provider),
+        Arc::clone(&infra.communication_access),
+        Arc::clone(&infra.uds_manager),
+    )));
+    registry.register(Arc::new(ConfigReloadable::new(Arc::clone(&infra.config))));
 
-    let reloader_config =
-        cda_plugin_runtime_update::RuntimeReloaderConfig::new(reloader_infra, factory);
-
-    let reloader_plugin = Arc::new(DefaultRuntimeReloaderPlugin::<
-        UdsManagerType<SP>,
-        DiagnosticTransportRouter<DoipDiagGateway<EcuManager<SP>>, CanDiagGateway>,
-        Configuration,
-        SL,
-        _,
-    >::new(reloader_config));
+    let reloader_plugin = Arc::new(DefaultRuntimeReloaderPlugin::new(
+        Arc::clone(&infra.config),
+        factory,
+        registry,
+    ));
 
     let storage = Arc::new(LocalStorage::new(&infra.storage_dir).map_err(|e| {
         AppError::InitializationFailed(format!("Failed to init storage, error={e:?}"))
