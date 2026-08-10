@@ -27,6 +27,8 @@ pub enum HttpRestrictionDecision {
 /// Contains the HTTP status, human-readable message, and an optional retry hint.
 #[derive(Debug)]
 pub struct HttpRestrictionDenial {
+    /// Structured reason for the restriction.
+    pub reason: super::config::HttpProtectionReason,
     /// HTTP status code to return.
     pub status: http::StatusCode,
     /// Human-readable denial message to include in the response body.

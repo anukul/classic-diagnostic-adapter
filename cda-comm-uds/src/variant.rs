@@ -178,6 +178,55 @@ impl<S: EcuGateway, T: EcuManager> UdsManager<S, T> {
         }
     }
 
+    /// Performs the initial sweep of all ECUs, checking online status and
+    /// triggering variant detection for those that are reachable. ECUs that
+    /// are offline get their state set immediately; duplicate groups are
+    /// deduplicated so only one detection runs per physical node.
+    #[tracing::instrument(skip_all,
+        fields(dlt_context = dlt_ctx!("UDS"))
+    )]
+    async fn start_variant_detection(&self) {
+        let mut ecus = Vec::new();
+        for (ecu_name, db) in self.ecus.iter() {
+            if !db.read().await.is_physical_ecu() {
+                tracing::debug!(
+                    ecu_name = %ecu_name,
+                    "Skip variant detection for functional description"
+                );
+                continue;
+            }
+            if let Err(DiagServiceError::EcuOffline(_)) =
+                self.gateway.ecu_online(ecu_name, db).await
+            {
+                // ECU is offline -> call detect_variant with empty responses to set
+                // appropriate state (Disconnected if was online, Offline if never tested)
+                if let Err(e) = db
+                    .write()
+                    .await
+                    .detect_variant::<<T as PayloadDecoder>::Response>(HashMap::new())
+                    .await
+                {
+                    tracing::error!(ecu_name = %ecu_name,
+                        "Failed to set ECU offline during variant detection: {e:?}");
+                }
+                continue;
+            }
+
+            if db
+                .read()
+                .await
+                .duplicating_ecu_names()
+                .is_some_and(|d| ecus.iter().any(|e| d.contains(e)))
+            {
+                continue; // Only do one variant detection for duplicated ECUs
+            }
+
+            ecus.push(ecu_name.to_owned());
+        }
+        let cloned = self.clone();
+        cloned.start_variant_detection_for_ecus(ecus).await;
+    }
+
     /// Deterministic representative of the ECU's duplicate group: the
     /// smallest member name (including the ECU itself) that is present in
     /// the loaded ECU map.
@@ -469,51 +518,6 @@ impl<S: EcuGateway, T: EcuManager> UdsVariant for UdsManager<S, T> {
         let ecu = self.uds_ecu_db(ecu_name)?;
         let status = ecu.read().await.ecu_status();
         Ok(status)
-    }
-
-    #[tracing::instrument(skip_all,
-        fields(dlt_context = dlt_ctx!("UDS"))
-    )]
-    async fn start_variant_detection(&self) {
-        let mut ecus = Vec::new();
-        for (ecu_name, db) in self.ecus.iter() {
-            if !db.read().await.is_physical_ecu() {
-                tracing::debug!(
-                    ecu_name = %ecu_name,
-                    "Skip variant detection for functional description"
-                );
-                continue;
-            }
-            if let Err(DiagServiceError::EcuOffline(_)) =
-                self.gateway.ecu_online(ecu_name, db).await
-            {
-                // ECU is offline -> call detect_variant with empty responses to set
-                // appropriate state (Disconnected if was online, Offline if never tested)
-                if let Err(e) = db
-                    .write()
-                    .await
-                    .detect_variant::<<T as PayloadDecoder>::Response>(HashMap::new())
-                    .await
-                {
-                    tracing::error!(ecu_name = %ecu_name,
-                        "Failed to set ECU offline during variant detection: {e:?}");
-                }
-                continue;
-            }
-
-            if db
-                .read()
-                .await
-                .duplicating_ecu_names()
-                .is_some_and(|d| ecus.iter().any(|e| d.contains(e)))
-            {
-                continue; // Only do one variant detection for duplicated ECUs
-            }
-
-            ecus.push(ecu_name.to_owned());
-        }
-        let cloned = self.clone();
-        cloned.start_variant_detection_for_ecus(ecus).await;
     }
 
     async fn get_logical_address(&self, ecu_name: &str) -> Result<u16, DiagServiceError> {

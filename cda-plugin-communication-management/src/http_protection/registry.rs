@@ -143,6 +143,7 @@ impl HttpRestrictionGuard for HttpProtectionRegistry {
         };
 
         HttpRestrictionDecision::Deny(HttpRestrictionDenial {
+            reason: config.reason,
             status: config.status,
             message: config.message,
             retry_after_seconds: config.retry_after_seconds,

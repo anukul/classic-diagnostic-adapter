@@ -367,15 +367,19 @@ impl Display for DiagCommAction {
     }
 }
 
+// todo alexmohr: revert this
 /// Type alias for the boxed shared shutdown signal.
 /// This provides a concrete named type for use in generic bounds.
-pub type ShutdownSignal = futures::future::Shared<BoxFuture<'static, ()>>;
+pub type ShutdownSignal =
+    futures::future::Shared<Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>>;
 
+/// Helper function to create a `ShutdownSignal` from a future.
+/// This allows ergonomic creation without needing to type the full Pin<Box<dyn ...>> type.
 pub fn shutdown_signal<F>(future: F) -> ShutdownSignal
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future<Output = ()> + Send + Sync + 'static,
 {
-    future.boxed().shared()
+    (Box::pin(future) as Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>>).shared()
 }
 
 /// Capability for gracefully shutting down background tasks/connections, e.g. before a

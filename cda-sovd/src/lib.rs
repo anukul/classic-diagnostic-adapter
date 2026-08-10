@@ -240,35 +240,20 @@ pub async fn add_openapi_routes(
     let dr = dynamic_router.clone();
     dynamic_router
         .add_finalizer(Arc::new(move |router: axum::Router| -> axum::Router {
+            let server_url = server_url.clone();
             let dr = dr.clone();
             let swagger_route: axum::routing::MethodRouter =
                 Swagger::new(OPENAPI_JSON_ROUTE).axum_route().into();
-            let openapi_route: axum::routing::MethodRouter =
-                routing::get(move |ExtractHost(host): ExtractHost| {
-                    let dr = dr.clone();
-                    async move {
-                        let mut api = (*dr.get_openapi().await).clone();
-                        let server_url = format!("http://{host}");
-                        let _ = openapi::api_docs(
-                            aide::transform::TransformOpenApi::new(&mut api),
-                            server_url,
-                        );
-                        Json(api)
-                    }
-                })
-                .into();
+            let openapi_route: axum::routing::MethodRouter = routing::get(move || async move {
+                let mut api = (*dr.get_openapi().await).clone();
+                let _ =
+                    openapi::api_docs(aide::transform::TransformOpenApi::new(&mut api), server_url);
+                Json(api)
+            })
+            .into();
             router
                 .route(SWAGGER_UI_ROUTE, swagger_route)
                 .route(OPENAPI_JSON_ROUTE, openapi_route)
-        }))
-        .await;
-}
-
-pub async fn install_update_guard(dynamic_router: &DynamicRouter, update_guard: UpdateGuardState) {
-    let layer = UpdateGuardLayer::new(update_guard);
-    dynamic_router
-        .add_finalizer(Arc::new(move |router: axum::Router| -> axum::Router {
-            router.layer(layer.clone())
         }))
         .await;
 }

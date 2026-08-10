@@ -151,19 +151,18 @@ impl<S: EcuGateway, T: EcuManager> UdsManager<S, T> {
     /// triggers (arriving after startup) to [`Self::start_variant_detection_for_ecus`].
     ///
     /// Deliberately **not** spawned in [`Self::new`]: doing so would run
-    /// detection-triggering work before any authorized activation. Intended
-    /// to be called once, from the initializer chain, before
-    /// [`crate::UdsVariant::start_variant_detection`]'s own sweep runs - the
-    /// initial discovery burst during `transport_control.enable()` simply
-    /// buffers in the channel until then (bounded by the channel's capacity;
-    /// see the caller), since the first full sweep does not depend on this
-    /// listener at all.
+    /// detection-triggering work before any authorized activation. Called
+    /// once from [`CommunicationLifecycle::initialize`] before the initial
+    /// sweep runs — the initial discovery burst during
+    /// `transport_control.enable()` simply buffers in the channel until then
+    /// (bounded by the channel's capacity; see the caller), since the first
+    /// full sweep does not depend on this listener at all.
     ///
     /// # Errors
     ///
     /// Returns [`CommControlError::InitFailed`] if called more than once
     /// (the receiver was already taken by an earlier call).
-    pub async fn start_variant_detection_listener(&self) -> Result<(), CommControlError> {
+    pub(crate) async fn start_variant_detection_listener(&self) -> Result<(), CommControlError> {
         let Some(mut variant_detection_receiver) =
             self.variant_detection_receiver.lock().await.take()
         else {

@@ -579,11 +579,6 @@ pub trait UdsVariant {
     /// Will return Err if the ECU does not exist.
     async fn get_ecu_state(&self, ecu_name: &str) -> Result<EcuState, DiagServiceError>;
 
-    /// trigger the variant detection process for all ECUs.
-    /// Main work will be done in the background, there is no result returned,
-    /// as the data is internally stored and used in `EcuUds`
-    async fn start_variant_detection(&self);
-
     /// Get the logical address of the given ECU.
     /// # Errors
     /// Will return Err if the ECU does not exist.
@@ -973,7 +968,6 @@ pub mod mock {
                 &self,
                 ecu_name: &str,
             ) -> Result<EcuState, DiagServiceError>;
-            async fn start_variant_detection(&self);
             async fn get_logical_address(
                 &self,
                 ecu_name: &str,
