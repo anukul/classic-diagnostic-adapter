@@ -72,12 +72,27 @@ jobs:
             changed-files.txt \
             --outdir /tmp
 
+      - name: Prepare duplicate-code comment artifact
+        run: |
+          mkdir -p pr-comment-duplicate-code
+          echo "${{ github.event.number }}" > pr-comment-duplicate-code/pr_number
+          cp /tmp/body.md pr-comment-duplicate-code/body.md
+
+      - name: Upload duplicate-code comment artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-comment-duplicate-code
+          path: pr-comment-duplicate-code/
+
+      # Post directly for non-fork PRs (instant feedback). Fork PRs lack write
+      # permissions and are handled by the workflow_run workflow in pr-comment.yml.
       - name: Post PR comment
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('/tmp/body.md', 'utf8');
+            const body = fs.readFileSync('pr-comment-duplicate-code/body.md', 'utf8');
             const marker = '<!-- duplicate-code-check -->';
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -103,6 +118,7 @@ jobs:
             }
 
       - name: Create check run
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
