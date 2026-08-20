@@ -92,7 +92,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const body = fs.readFileSync('pr-comment-duplicate-code/body.md', 'utf8');
+            const body = fs.readFileSync('/tmp/body.md', 'utf8');
             const marker = '<!-- duplicate-code-check -->';
 
             const { data: comments } = await github.rest.issues.listComments({
